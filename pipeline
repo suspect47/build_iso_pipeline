@@ -1,0 +1,64 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '3', artifactNumToKeepStr: '3'))
+    }
+    agent {
+        label 'build-linux-x64'
+    }
+    parameters {
+        choice(name: 'ULTIMA_MODEL', choices: 'ULTIMA-VMC', description: 'choice of the ultima model')
+
+        string(name: 'GITHASH_ULTIMA_DIST', defaultValue: 'master', description: 'choice of the branch')
+    
+        string(name: 'ULTIMA_MAJOR_VERSION', defaultValue: '0', description: 'choice of the major version')
+    
+        string(name: 'ULTIMA_MINOR_VERSION', defaultValue: '0', description: 'choice of the minor version')
+    
+        string(name: 'ULTIMA_ROOT_REVISION', defaultValue: '0', description: 'choice of the root revision')
+    }
+    
+    stages {
+        stage('Cloning repo "ultima-dist"') {
+            steps {
+                git(url: 'git@git.itrium-spb.ru:ultima/ultima-dist.git', credentialsId: '19a6d233-4e91-4567-a67e-5a1211786063')
+                sh 'git checkout ${GITHASH_ULTIMA_DIST}'
+            }
+        }
+        stage ('Copying base iso from ftp') {
+            steps {
+                sh 'curl ftp://10.1.31.1/dependencies/ultima-vmc/linux-amd64/ubuntu-server/environment18_04.iso --user user:password -o environment18_04.iso'   
+            }
+        }
+        stage ('make directory for a new iso and unpack it') {
+            steps {
+                sh 'mkdir ./environment18_04'
+                sh 'xorriso -osirrox on -indev environment18_04.iso -extract / ./environment18_04'
+                sh 'chmod -R 777 environment18_04'
+                sh 'cp -rf *.sh environment18_04/packages && cp -rf postgresql ultima environment18_04/packages'
+            }
+        }
+        stage ('Copying last working build from ultima-dist') {
+            steps {
+                copyArtifacts filter: '**/NeyrossPlatform*.sh', flatten: true, projectName: 'ultima-dist', selector: lastSuccessful(), target: 'environment18_04/packages/ultima'
+            }
+        }
+        stage ('Making the iso') {
+            steps {
+                sh 'RESULT_VERSION=${ULTIMA_MAJOR_VERSION}.${ULTIMA_MINOR_VERSION}.${ULTIMA_ROOT_REVISION} && mkisofs -r -V "ultima-iso" -cache-inodes -J -l -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -o ultima-vmc-ubuntu18.04-${RESULT_VERSION}.iso environment18_04'
+            }
+        }
+        stage ('Copying iso to ftp') {
+            steps {
+                sh 'rm environment18_04.iso'
+                sh 'curl -T *.iso -u robot:5CacgPzIx ftp://10.1.31.1/releases/ultima-vmc/last-build/ultima-vmc-${ULTIMA_MAJOR_VERSION}.${ULTIMA_MINOR_VERSION}/'
+            }
+        }
+    }
+	post {
+        always {
+            sh 'rm -rf /home/jenkins/workspace/ultima-common/linux-amd64/ultima-iso-18.04/*'
+        }
+    }
+}
